@@ -25,8 +25,8 @@ SHAPES = {
     "G": DataShape("page_device_90d", ("page", "device"), 90, "Device-level page perf"),
     "H": DataShape("query_country_90d", ("query", "country"), 90, "Country-level query perf"),
     "I": DataShape("page_country_90d", ("page", "country"), 90, "Country-level page perf"),
-    "J": DataShape("query_searchapp_90d", ("query", "searchAppearance"), 90, "SERP feature by query"),
-    "K": DataShape("page_searchapp_90d", ("page", "searchAppearance"), 90, "SERP feature by page"),
+    "J": DataShape("searchapp_90d", ("searchAppearance",), 90, "SERP feature metrics"),
+    "K": DataShape("searchapp_90d", ("searchAppearance",), 90, "SERP feature metrics"),
     "L": DataShape("page_date_365d", ("page", "date"), 365, "Long-term page trends"),
     "M": DataShape("query_date_365d", ("query", "date"), 365, "Long-term query trends"),
 }

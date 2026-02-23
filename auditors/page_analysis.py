@@ -693,107 +693,73 @@ class PageAnalysisAuditor(BaseGSCAuditor):
     # Task 25 — Rich-Result-Eligible Page Identification
     # ------------------------------------------------------------------
     def task_25_rich_result_eligible(self) -> list[AuditFinding]:
-        """Identify pages without rich result appearances that rank for
-        query types typically qualifying for rich results."""
-        df_sa = self.get_df("page_searchapp_90d")
-        if df_sa.empty:
+        """Identify pages ranking for question-pattern queries that could
+        benefit from structured data markup (FAQ, HowTo, etc.)."""
+        # Check what rich result types the site already earns
+        df_sa = self.get_df("searchapp_90d")
+        existing_rich_types = set()
+        rich_type_keywords = {
+            "FAQ", "HOWTO", "REVIEW", "PRODUCT", "RECIPE", "VIDEO",
+            "BREADCRUMB",
+        }
+        if not df_sa.empty and "searchAppearance" in df_sa.columns:
+            for sa_type in df_sa["searchAppearance"].unique():
+                upper = str(sa_type).upper()
+                for kw in rich_type_keywords:
+                    if kw in upper:
+                        existing_rich_types.add(sa_type)
+
+        # Use query-page data to find pages with question-pattern queries
+        df_qp = self.get_df("query_page_90d")
+        if df_qp.empty:
             return []
 
-        # Rich result search appearance types
-        rich_types = {
-            "FAQ_RICH_RESULT", "HOWTO_RICH_RESULT", "REVIEW_SNIPPET",
-            "PRODUCT_SNIPPET", "RECIPE_RICH_RESULT", "VIDEO_RICH_RESULT",
-            "BREADCRUMB", "FAQ", "HOWTO", "REVIEW", "PRODUCT",
-        }
-
-        # Pages that already have rich results
-        pages_with_rich = set()
-        if "searchAppearance" in df_sa.columns:
-            rich_mask = df_sa["searchAppearance"].str.upper().isin(
-                {rt.upper() for rt in rich_types}
+        question_patterns = (
+            r"(?i)^(how|what|why|when|where|who|which|can|does|is|are|do)\b"
+        )
+        eligible = df_qp[
+            df_qp["query"].str.contains(
+                question_patterns, regex=True, na=False
             )
-            pages_with_rich = set(df_sa[rich_mask]["page"].unique())
+        ]
 
-        # All pages in the dataset
-        all_pages = set(df_sa["page"].unique())
-        pages_without_rich = all_pages - pages_with_rich
-
-        if not pages_without_rich:
+        if eligible.empty:
             return [self.create_finding(
                 task_id=25,
                 severity=Severity.INSIGHT,
                 summary=(
-                    "All pages in your search appearance data already have "
-                    "rich result types assigned. No additional opportunities found."
+                    "No question-pattern queries found in your search data. "
+                    "Rich result opportunities may be limited for this site."
                 ),
             )]
 
-        # Cross-reference with query patterns that suggest rich result eligibility
-        # Use query_page_90d to find queries for pages without rich results
-        df_qp = self.get_df("query_page_90d")
-        if df_qp.empty:
-            # Fall back to just listing pages without rich results
-            page_perf = (
-                df_sa[df_sa["page"].isin(pages_without_rich)]
-                .groupby("page")
-                .agg(total_impressions=("impressions", "sum"), total_clicks=("clicks", "sum"))
-                .nlargest(50, "total_impressions")
-                .reset_index()
-            )
-            page_perf.columns = ["Page URL", "Impressions", "Clicks"]
-
-            return [self.create_finding(
-                task_id=25,
-                severity=Severity.MEDIUM,
-                summary=(
-                    f"Found {len(pages_without_rich)} pages without rich result "
-                    f"search appearances. Unable to cross-reference with query "
-                    f"patterns (query-page data unavailable)."
-                ),
-                affected_count=len(pages_without_rich),
-                data_table=page_perf,
-                recommendations=[
-                    "Add FAQ schema to pages targeting question-based queries.",
-                    "Implement HowTo schema on tutorial and guide pages.",
-                    "Add Review/Product schema to product and review pages.",
-                ],
-            )]
-
-        # Question-pattern queries that suggest FAQ/HowTo eligibility
-        question_patterns = r"(?i)^(how|what|why|when|where|who|which|can|does|is|are|do)\b"
-        eligible_queries = df_qp[
-            df_qp["query"].str.contains(question_patterns, regex=True, na=False)
-            & df_qp["page"].isin(pages_without_rich)
-        ]
-
-        if eligible_queries.empty:
-            return [self.create_finding(
-                task_id=25,
-                severity=Severity.LOW,
-                summary=(
-                    f"Found {len(pages_without_rich)} pages without rich results, "
-                    f"but none of them rank for question-pattern queries that "
-                    f"would typically qualify for FAQ or HowTo rich results."
-                ),
-                affected_count=len(pages_without_rich),
-            )]
-
-        # Aggregate by page to find best candidates
+        # Aggregate by page — best candidates for structured data
         candidates = (
-            eligible_queries
+            eligible
             .groupby("page")
             .agg(
                 question_queries=("query", "count"),
                 total_impressions=("impressions", "sum"),
                 total_clicks=("clicks", "sum"),
-                sample_queries=("query", lambda x: ", ".join(x.head(3).tolist())),
+                sample_queries=(
+                    "query",
+                    lambda x: ", ".join(x.head(3).tolist()),
+                ),
             )
             .sort_values("total_impressions", ascending=False)
             .reset_index()
         )
         candidates.columns = [
-            "Page URL", "Question Queries", "Impressions", "Clicks", "Sample Queries"
+            "Page URL", "Question Queries", "Impressions",
+            "Clicks", "Sample Queries",
         ]
+
+        rich_note = ""
+        if existing_rich_types:
+            rich_note = (
+                f" Your site already earns these rich result types: "
+                f"{', '.join(sorted(existing_rich_types))}."
+            )
 
         severity = Severity.MEDIUM if len(candidates) > 5 else Severity.LOW
 
@@ -801,19 +767,17 @@ class PageAnalysisAuditor(BaseGSCAuditor):
             task_id=25,
             severity=severity,
             summary=(
-                f"Identified {len(candidates)} pages ranking for question-pattern "
-                f"queries that currently lack rich result markup. Adding structured "
-                f"data (FAQ, HowTo) to these pages could unlock enhanced SERP "
-                f"features and improve CTR."
+                f"Found {len(candidates)} pages ranking for question-pattern "
+                f"queries that may benefit from structured data markup.{rich_note}"
             ),
             affected_count=len(candidates),
             data_table=candidates.head(50),
             recommendations=[
-                "Add FAQ schema (JSON-LD) to pages ranking for question-format queries.",
-                "Implement HowTo schema on step-by-step guide and tutorial pages.",
-                "Add Review schema to pages with user reviews or editorial ratings.",
-                "Use Google's Rich Results Test tool to validate your structured data after implementation.",
-                "Monitor the Search Appearance report in GSC after deploying schema to measure impact.",
+                "Add FAQ schema (JSON-LD) to pages ranking for question queries.",
+                "Implement HowTo schema on tutorial and guide pages.",
+                "Add Review/Product schema where applicable.",
+                "Validate markup with Google's Rich Results Test tool.",
+                "Monitor Search Appearance in GSC after deploying schema.",
             ],
         )]
 

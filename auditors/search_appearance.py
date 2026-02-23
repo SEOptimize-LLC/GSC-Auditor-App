@@ -26,10 +26,9 @@ class SearchAppearanceAuditor(BaseGSCAuditor):
     # -------------------------------------------------------------------
     def task_32_rich_result_coverage(self) -> list[AuditFinding]:
         """Inventory all rich result types earned and their performance."""
-        query_sa = self.get_df("query_searchapp_90d")
-        page_sa = self.get_df("page_searchapp_90d")
+        sa = self.get_df("searchapp_90d")
 
-        if query_sa.empty and page_sa.empty:
+        if sa.empty:
             return [self.create_finding(
                 task_id=32,
                 severity=Severity.INSIGHT,
@@ -40,57 +39,22 @@ class SearchAppearanceAuditor(BaseGSCAuditor):
                 ],
             )]
 
-        # Aggregate by search appearance type from both datasets
-        findings_list: list[AuditFinding] = []
-
-        # Query-level breakdown
-        if not query_sa.empty:
-            query_summary = query_sa.groupby("searchAppearance").agg(
-                queries=("query", "nunique"),
-                clicks=("clicks", "sum"),
-                impressions=("impressions", "sum"),
-            ).sort_values("impressions", ascending=False).reset_index()
-            query_summary.columns = ["Rich Result Type", "Unique Queries", "Clicks", "Impressions"]
-        else:
-            query_summary = pd.DataFrame()
-
-        # Page-level breakdown
-        if not page_sa.empty:
-            page_summary = page_sa.groupby("searchAppearance").agg(
-                pages=("page", "nunique"),
-                clicks=("clicks", "sum"),
-                impressions=("impressions", "sum"),
-            ).sort_values("impressions", ascending=False).reset_index()
-            page_summary.columns = ["Rich Result Type", "Unique Pages", "Clicks", "Impressions"]
-        else:
-            page_summary = pd.DataFrame()
-
-        # Build combined display table
-        if not query_summary.empty and not page_summary.empty:
-            display = query_summary.merge(
-                page_summary[["Rich Result Type", "Unique Pages"]],
-                on="Rich Result Type",
-                how="outer",
-            )
-            display = display.fillna(0)
-            for col in ["Unique Queries", "Clicks", "Impressions", "Unique Pages"]:
-                if col in display.columns:
-                    display[col] = display[col].astype(int)
-            display = display.sort_values("Impressions", ascending=False)
-        elif not query_summary.empty:
-            display = query_summary
-        else:
-            display = page_summary
+        display = sa.copy()
+        display["CTR %"] = (display["ctr"] * 100).round(2)
+        display["Avg Position"] = display["position"].round(1)
+        display = display[["searchAppearance", "clicks", "impressions", "CTR %", "Avg Position"]]
+        display.columns = ["Search Appearance Type", "Clicks", "Impressions", "CTR %", "Avg Position"]
+        display = display.sort_values("Impressions", ascending=False)
 
         total_types = len(display)
-        total_rich_clicks = int(display["Clicks"].sum()) if "Clicks" in display.columns else 0
+        total_rich_clicks = int(display["Clicks"].sum())
 
         severity = Severity.INSIGHT if total_types >= 3 else Severity.MEDIUM
 
         return [self.create_finding(
             task_id=32,
             severity=severity,
-            summary=f"Your site earns {total_types} distinct rich result types generating {total_rich_clicks:,} clicks. "
+            summary=f"Your site earns {total_types} distinct search appearance types generating {total_rich_clicks:,} clicks. "
                     f"Rich results improve visibility and CTR beyond standard blue links.",
             affected_count=total_types,
             opportunity_value=f"{total_rich_clicks:,} clicks from rich results",
@@ -107,10 +71,10 @@ class SearchAppearanceAuditor(BaseGSCAuditor):
     # Task 33 — Sitelink Search Box Monitoring
     # -------------------------------------------------------------------
     def task_33_sitelink_monitoring(self) -> list[AuditFinding]:
-        """Check for sitelinks in search appearance data and monitor brand query association."""
-        query_sa = self.get_df("query_searchapp_90d")
+        """Check for sitelinks in search appearance data."""
+        sa = self.get_df("searchapp_90d")
 
-        if query_sa.empty:
+        if sa.empty:
             return [self.create_finding(
                 task_id=33,
                 severity=Severity.INSIGHT,
@@ -118,17 +82,16 @@ class SearchAppearanceAuditor(BaseGSCAuditor):
                 recommendations=["Ensure Google Search Console search appearance data is being collected."],
             )]
 
-        # Filter for sitelink-related appearances
         sitelink_keywords = ["sitelink", "searchbox"]
-        sitelink_data = query_sa[
-            query_sa["searchAppearance"].str.lower().str.contains("|".join(sitelink_keywords), na=False)
+        sitelink_data = sa[
+            sa["searchAppearance"].str.lower().str.contains("|".join(sitelink_keywords), na=False)
         ]
 
         if sitelink_data.empty:
             return [self.create_finding(
                 task_id=33,
                 severity=Severity.MEDIUM,
-                summary="No sitelink appearances detected in search appearance data. "
+                summary="No sitelink appearances detected. "
                         "Sitelinks typically appear for strong brand queries and indicate Google's trust in your site structure.",
                 recommendations=[
                     "Strengthen your brand presence and site authority to earn sitelinks.",
@@ -138,41 +101,26 @@ class SearchAppearanceAuditor(BaseGSCAuditor):
                 ],
             )]
 
-        # Analyze which queries trigger sitelinks
-        sitelink_summary = sitelink_data.groupby("query").agg(
-            clicks=("clicks", "sum"),
-            impressions=("impressions", "sum"),
-        ).sort_values("impressions", ascending=False).reset_index()
+        total_clicks = int(sitelink_data["clicks"].sum())
+        total_impressions = int(sitelink_data["impressions"].sum())
 
-        sitelink_summary["ctr_pct"] = (
-            (sitelink_summary["clicks"] / sitelink_summary["impressions"].replace(0, 1)) * 100
-        ).round(2)
-
-        sitelink_summary.columns = ["Query", "Clicks", "Impressions", "CTR %"]
-
-        # Check how many are branded
-        branded_count = sum(
-            1 for q in sitelink_summary["Query"]
-            if self.is_brand_query(q)
-        )
-        total_queries = len(sitelink_summary)
-        total_clicks = int(sitelink_summary["Clicks"].sum())
-
-        severity = Severity.INSIGHT
+        display = sitelink_data.copy()
+        display["CTR %"] = (display["ctr"] * 100).round(2)
+        display = display[["searchAppearance", "clicks", "impressions", "CTR %"]]
+        display.columns = ["Appearance Type", "Clicks", "Impressions", "CTR %"]
 
         return [self.create_finding(
             task_id=33,
-            severity=severity,
-            summary=f"Sitelinks appear for {total_queries} queries ({branded_count} branded) generating "
-                    f"{total_clicks:,} clicks. Sitelinks increase SERP real estate and CTR.",
-            affected_count=total_queries,
+            severity=Severity.INSIGHT,
+            summary=f"Sitelink appearances detected generating {total_clicks:,} clicks from "
+                    f"{total_impressions:,} impressions. Sitelinks increase SERP real estate and CTR.",
+            affected_count=len(sitelink_data),
             opportunity_value=f"{total_clicks:,} clicks via sitelinks",
-            data_table=sitelink_summary.head(30),
+            data_table=display,
             recommendations=[
                 "Monitor sitelink appearance stability — disappearing sitelinks may signal authority issues.",
                 "Ensure branded queries consistently trigger sitelinks.",
                 "Optimize the pages appearing as sitelinks for their respective sub-intents.",
-                "Use Google Search Console to demote undesirable sitelink URLs if needed.",
             ],
         )]
 
@@ -180,79 +128,64 @@ class SearchAppearanceAuditor(BaseGSCAuditor):
     # Task 34 — Video Rich Result Gap Analysis
     # -------------------------------------------------------------------
     def task_34_video_rich_result_gap(self) -> list[AuditFinding]:
-        """Find pages that could benefit from Video rich results but don't have them."""
-        page_sa = self.get_df("page_searchapp_90d")
-        query_sa = self.get_df("query_searchapp_90d")
+        """Identify video rich result opportunities using appearance data and query patterns."""
+        sa = self.get_df("searchapp_90d")
+        query_df = self.get_df("query_90d")
 
-        if page_sa.empty and query_sa.empty:
-            return [self.create_finding(
-                task_id=34,
-                severity=Severity.INSIGHT,
-                summary="No search appearance data available for video rich result gap analysis.",
-                recommendations=["Collect search appearance data to enable this analysis."],
-            )]
-
-        # Identify pages/queries already with video rich results
         video_keywords = ["video", "richvideo"]
-        pages_with_video: set[str] = set()
-        if not page_sa.empty:
-            video_pages = page_sa[
-                page_sa["searchAppearance"].str.lower().str.contains("|".join(video_keywords), na=False)
-            ]
-            pages_with_video = set(video_pages["page"].unique())
+        has_video = False
+        if not sa.empty:
+            has_video = sa["searchAppearance"].str.lower().str.contains(
+                "|".join(video_keywords), na=False
+            ).any()
 
-        # Identify queries that suggest video intent but lack video rich results
+        # Find video-intent queries from query data
         video_intent_patterns = ["how to", "tutorial", "guide", "demo", "review", "unboxing", "walkthrough", "setup", "install"]
 
-        if not query_sa.empty:
-            # Queries suggesting video intent
-            video_intent_mask = query_sa["query"].str.lower().str.contains(
-                "|".join(video_intent_patterns), na=False
-            )
-            video_intent_queries = query_sa[video_intent_mask]
-
-            # Of those, which do NOT have video appearance?
-            video_appearance_mask = query_sa["searchAppearance"].str.lower().str.contains(
-                "|".join(video_keywords), na=False
-            )
-            gap_queries = video_intent_queries[~video_appearance_mask]
-        else:
-            gap_queries = pd.DataFrame()
-
-        if gap_queries.empty:
+        if query_df.empty:
             return [self.create_finding(
                 task_id=34,
                 severity=Severity.INSIGHT,
-                summary="No significant video rich result gaps found. Video-intent queries already have video appearances, "
-                        "or no video-intent queries were detected.",
+                summary="No query data available for video rich result gap analysis.",
+                recommendations=["Collect query data to enable this analysis."],
+            )]
+
+        video_intent_mask = query_df["query"].str.lower().str.contains(
+            "|".join(video_intent_patterns), na=False
+        )
+        video_intent_queries = query_df[video_intent_mask].copy()
+
+        if video_intent_queries.empty:
+            return [self.create_finding(
+                task_id=34,
+                severity=Severity.INSIGHT,
+                summary="No video-intent queries detected (how-to, tutorial, guide, etc.).",
                 recommendations=["Continue monitoring as new video-intent queries emerge."],
             )]
 
-        gap_summary = gap_queries.groupby("query").agg(
-            clicks=("clicks", "sum"),
-            impressions=("impressions", "sum"),
-        ).sort_values("impressions", ascending=False).reset_index()
-        gap_summary.columns = ["Query", "Clicks", "Impressions"]
+        gap_summary = video_intent_queries.sort_values("impressions", ascending=False).head(50)
+        display = gap_summary[["query", "clicks", "impressions", "position"]].copy()
+        display["position"] = display["position"].round(1)
+        display.columns = ["Query", "Clicks", "Impressions", "Avg Position"]
 
-        total_opportunity_impressions = int(gap_summary["Impressions"].sum())
+        total_opportunity = int(display["Impressions"].sum())
+        video_status = "Your site already earns video rich results." if has_video else "Your site does NOT currently earn any video rich results."
 
-        severity = Severity.MEDIUM if len(gap_summary) > 10 else Severity.LOW
+        severity = Severity.MEDIUM if not has_video and len(video_intent_queries) > 10 else Severity.LOW
 
         return [self.create_finding(
             task_id=34,
             severity=severity,
-            summary=f"Found {len(gap_summary)} video-intent queries without video rich results. "
-                    f"These queries (how-to, tutorial, guide, etc.) have {total_opportunity_impressions:,} impressions "
-                    f"and could benefit from video content and VideoObject schema.",
-            affected_count=len(gap_summary),
-            opportunity_value=f"{total_opportunity_impressions:,} impressions to capture with video",
-            data_table=gap_summary.head(50),
+            summary=f"{video_status} Found {len(video_intent_queries)} video-intent queries "
+                    f"with {total_opportunity:,} impressions that could benefit from video content and VideoObject schema.",
+            affected_count=len(video_intent_queries),
+            opportunity_value=f"{total_opportunity:,} impressions to capture with video",
+            data_table=display,
             recommendations=[
-                "Create video content for the highest-impression gap queries.",
+                "Create video content for the highest-impression video-intent queries.",
                 "Add VideoObject structured data to pages that already contain embedded videos.",
                 "Ensure video thumbnails are specified in schema for better SERP visibility.",
                 "Host videos on YouTube and embed them on your site for dual exposure.",
-                "Use descriptive video titles and descriptions that match the target queries.",
             ],
         )]
 
@@ -363,26 +296,26 @@ class SearchAppearanceAuditor(BaseGSCAuditor):
     # Task 36 — AMP vs Standard Comparison
     # -------------------------------------------------------------------
     def task_36_amp_vs_standard(self) -> list[AuditFinding]:
-        """Compare AMP vs non-AMP page performance."""
-        page_sa = self.get_df("page_searchapp_90d")
+        """Check for AMP search appearances and assess relevance."""
+        sa = self.get_df("searchapp_90d")
 
-        if page_sa.empty:
+        if sa.empty:
             return [self.create_finding(
                 task_id=36,
                 severity=Severity.INSIGHT,
                 summary="No search appearance data available for AMP analysis.",
             )]
 
-        amp_keywords = ["amp", "AMP_ARTICLE", "AMP_BLUE_LINK"]
-        amp_data = page_sa[
-            page_sa["searchAppearance"].str.lower().str.contains("|".join([k.lower() for k in amp_keywords]), na=False)
+        amp_keywords = ["amp", "amp_article", "amp_blue_link"]
+        amp_data = sa[
+            sa["searchAppearance"].str.lower().str.contains("|".join(amp_keywords), na=False)
         ]
 
         if amp_data.empty:
             return [self.create_finding(
                 task_id=36,
                 severity=Severity.INSIGHT,
-                summary="No AMP pages detected in search appearance data. This is expected if your site does not use AMP. "
+                summary="No AMP appearances detected. This is expected if your site does not use AMP. "
                         "Google no longer requires AMP for Top Stories or other SERP features.",
                 recommendations=[
                     "AMP is no longer required for most SERP benefits — focus on Core Web Vitals instead.",
@@ -390,51 +323,40 @@ class SearchAppearanceAuditor(BaseGSCAuditor):
                 ],
             )]
 
-        # Aggregate AMP vs non-AMP
-        non_amp_data = page_sa[
-            ~page_sa["searchAppearance"].str.lower().str.contains("|".join([k.lower() for k in amp_keywords]), na=False)
+        non_amp_data = sa[
+            ~sa["searchAppearance"].str.lower().str.contains("|".join(amp_keywords), na=False)
         ]
 
-        amp_agg = amp_data.groupby("page").agg(
-            clicks=("clicks", "sum"),
-            impressions=("impressions", "sum"),
-        )
-        amp_agg["type"] = "AMP"
+        amp_clicks = int(amp_data["clicks"].sum())
+        amp_impressions = int(amp_data["impressions"].sum())
+        non_amp_clicks = int(non_amp_data["clicks"].sum()) if not non_amp_data.empty else 0
 
-        non_amp_agg = non_amp_data.groupby("page").agg(
-            clicks=("clicks", "sum"),
-            impressions=("impressions", "sum"),
-        )
-        non_amp_agg["type"] = "Standard"
+        amp_click_share = amp_clicks / max(amp_clicks + non_amp_clicks, 1) * 100
 
         comparison = pd.DataFrame({
-            "Metric": ["Pages", "Total Clicks", "Total Impressions", "Avg CTR"],
+            "Metric": ["Total Clicks", "Total Impressions", "Avg CTR"],
             "AMP": [
-                len(amp_agg),
-                int(amp_agg["clicks"].sum()),
-                int(amp_agg["impressions"].sum()),
-                f"{(amp_agg['clicks'].sum() / max(amp_agg['impressions'].sum(), 1) * 100):.2f}%",
+                amp_clicks,
+                amp_impressions,
+                f"{(amp_clicks / max(amp_impressions, 1) * 100):.2f}%",
             ],
-            "Standard": [
-                len(non_amp_agg),
-                int(non_amp_agg["clicks"].sum()),
-                int(non_amp_agg["impressions"].sum()),
-                f"{(non_amp_agg['clicks'].sum() / max(non_amp_agg['impressions'].sum(), 1) * 100):.2f}%",
+            "Non-AMP": [
+                non_amp_clicks,
+                int(non_amp_data["impressions"].sum()) if not non_amp_data.empty else 0,
+                f"{(non_amp_clicks / max(int(non_amp_data['impressions'].sum()) if not non_amp_data.empty else 1, 1) * 100):.2f}%",
             ],
         })
 
-        amp_click_share = amp_agg["clicks"].sum() / max(amp_agg["clicks"].sum() + non_amp_agg["clicks"].sum(), 1) * 100
         severity = Severity.MEDIUM if amp_click_share > 20 else Severity.LOW
 
         return [self.create_finding(
             task_id=36,
             severity=severity,
-            summary=f"AMP pages account for {amp_click_share:.1f}% of clicks across {len(amp_agg)} pages. "
+            summary=f"AMP appearances account for {amp_click_share:.1f}% of search appearance clicks. "
                     f"With AMP no longer required for SERP features, evaluate whether maintaining AMP is worth the overhead.",
-            affected_count=len(amp_agg),
+            affected_count=len(amp_data),
             data_table=comparison,
             recommendations=[
-                "Audit whether AMP pages outperform their standard equivalents in CTR and Core Web Vitals.",
                 "If standard pages pass CWV thresholds, consider sunsetting AMP to reduce maintenance burden.",
                 "Ensure AMP-to-standard migration uses proper redirects and canonical tags.",
                 "Test removing AMP for a subset of pages and monitor performance for 30 days.",
@@ -445,63 +367,54 @@ class SearchAppearanceAuditor(BaseGSCAuditor):
     # Task 37 — Featured Snippet Ownership Audit
     # -------------------------------------------------------------------
     def task_37_featured_snippet_ownership(self) -> list[AuditFinding]:
-        """Find queries where site ranks #1-3 but doesn't own the featured snippet."""
-        query_sa = self.get_df("query_searchapp_90d")
+        """Identify featured snippet opportunities using query ranking data."""
+        sa = self.get_df("searchapp_90d")
+        query_df = self.get_df("query_90d")
 
-        if query_sa.empty:
-            return [self.create_finding(
-                task_id=37,
-                severity=Severity.INSIGHT,
-                summary="No search appearance data available for featured snippet analysis.",
-            )]
-
+        # Check if site already has featured snippets
         snippet_keywords = ["rich_snippet", "featured_snippet", "richsnippet"]
+        has_snippets = False
+        if not sa.empty:
+            has_snippets = sa["searchAppearance"].str.lower().str.contains(
+                "|".join(snippet_keywords), na=False
+            ).any()
 
-        # Queries that have featured snippet appearance
-        snippet_queries = set(
-            query_sa[
-                query_sa["searchAppearance"].str.lower().str.contains(
-                    "|".join(snippet_keywords), na=False
-                )
-            ]["query"].unique()
-        )
-
-        # Queries ranking #1-3 (from the same dataset, take best position per query)
-        top_ranking = query_sa.groupby("query").agg(
-            best_position=("position", "min"),
-            total_clicks=("clicks", "sum"),
-            total_impressions=("impressions", "sum"),
-        ).reset_index()
-
-        top_ranking = top_ranking[top_ranking["best_position"] <= 3]
-
-        # Queries ranking #1-3 but NOT having featured snippet appearance
-        no_snippet = top_ranking[~top_ranking["query"].isin(snippet_queries)].copy()
-        no_snippet = no_snippet.sort_values("total_impressions", ascending=False)
-
-        if no_snippet.empty:
+        if query_df.empty:
             return [self.create_finding(
                 task_id=37,
                 severity=Severity.INSIGHT,
-                summary="All top-ranking queries appear to have associated rich/featured snippet appearances, "
-                        "or no queries rank in positions 1-3.",
+                summary="No query data available for featured snippet analysis.",
             )]
 
-        display = no_snippet.head(50).copy()
-        display["best_position"] = display["best_position"].round(1)
-        display.columns = ["Query", "Best Position", "Clicks", "Impressions"]
+        # Find queries ranking #1-3 — these are candidates for snippet capture
+        top_ranking = query_df[query_df["position"] <= 3].copy()
+        top_ranking = top_ranking.sort_values("impressions", ascending=False)
 
-        total_impressions_at_stake = int(display["Impressions"].sum())
+        if top_ranking.empty:
+            return [self.create_finding(
+                task_id=37,
+                severity=Severity.INSIGHT,
+                summary="No queries ranking in positions 1-3 found.",
+            )]
 
-        severity = Severity.MEDIUM if len(no_snippet) > 10 else Severity.LOW
+        display = top_ranking.head(50).copy()
+        display["position"] = display["position"].round(1)
+        display["ctr_pct"] = (display["ctr"] * 100).round(2)
+        display = display[["query", "position", "clicks", "impressions", "ctr_pct"]]
+        display.columns = ["Query", "Avg Position", "Clicks", "Impressions", "CTR %"]
+
+        total_impressions = int(display["Impressions"].sum())
+        snippet_status = "Your site currently earns featured snippets." if has_snippets else "No featured snippet appearances detected for your site."
+
+        severity = Severity.MEDIUM if not has_snippets and len(top_ranking) > 10 else Severity.LOW
 
         return [self.create_finding(
             task_id=37,
             severity=severity,
-            summary=f"Found {len(no_snippet)} queries ranking in positions 1-3 without featured snippet ownership. "
-                    f"Winning the featured snippet for these queries could significantly boost CTR and visibility.",
-            affected_count=len(no_snippet),
-            opportunity_value=f"{total_impressions_at_stake:,} impressions eligible for snippet capture",
+            summary=f"{snippet_status} Found {len(top_ranking)} queries ranking in positions 1-3 "
+                    f"with {total_impressions:,} impressions — these are candidates for featured snippet capture.",
+            affected_count=len(top_ranking),
+            opportunity_value=f"{total_impressions:,} impressions eligible for snippet capture",
             data_table=display,
             recommendations=[
                 "Structure content with clear question-and-answer formatting for top target queries.",

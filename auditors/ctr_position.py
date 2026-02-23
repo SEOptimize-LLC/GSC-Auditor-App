@@ -434,177 +434,103 @@ class CTRPositionAuditor(BaseGSCAuditor):
     # Task 31 — Rich Result CTR Lift Quantification
     # ------------------------------------------------------------------
     def task_31_rich_result_ctr_lift(self) -> list[AuditFinding]:
-        """Compare CTR for queries with rich results vs. without to quantify the lift."""
-        df = self.get_df("query_searchapp_90d")
-        if df.empty:
-            return []
+        """Compare CTR of rich result appearances vs. overall site CTR."""
+        sa = self.get_df("searchapp_90d")
+        query_df = self.get_df("query_90d")
 
-        # Identify rich result types (anything other than plain "WEB" appearance)
-        # searchAppearance may contain values like RICH_RESULT, AMP, VIDEO, etc.
-        # Queries appearing in this DataFrame have some form of search appearance annotation
-        if "searchAppearance" not in df.columns:
-            return []
-
-        # Get the set of queries that have rich results
-        rich_queries = df[
-            df["searchAppearance"].str.upper() != "WEB"
-        ]["query"].unique() if not df.empty else []
-
-        if len(rich_queries) == 0:
+        if sa.empty:
             return [self.create_finding(
                 task_id=31,
                 severity=Severity.INSIGHT,
-                summary="No rich result search appearances found in the data. "
+                summary="No search appearance data available. "
                         "Consider implementing structured data to qualify for rich results.",
                 recommendations=[
                     "Add Schema.org structured data (FAQ, HowTo, Review, Product) to eligible pages.",
                     "Use Google's Rich Results Test to validate your markup.",
-                    "Focus on content types most likely to trigger rich results in your niche.",
                 ],
             )]
 
-        # Aggregate rich-result queries: total clicks and impressions from rich appearances
-        rich_df = df[df["searchAppearance"].str.upper() != "WEB"].copy()
-        rich_agg = rich_df.groupby("query").agg(
-            rich_clicks=("clicks", "sum"),
-            rich_impressions=("impressions", "sum"),
-            rich_position=("position", "mean"),
-        ).reset_index()
-        rich_agg["rich_ctr"] = (
-            rich_agg["rich_clicks"] / rich_agg["rich_impressions"]
-        ).fillna(0)
+        # Separate rich result types from plain web
+        rich_types = sa[sa["searchAppearance"].str.upper() != "WEB"].copy()
 
-        # Get baseline CTR for the same queries from the standard query data
-        # to compare apples-to-apples
-        query_df = self.get_df("query_90d")
-        if query_df.empty:
-            # Fall back to using the search appearance data for non-rich comparisons
-            non_rich_df = df[df["searchAppearance"].str.upper() == "WEB"]
-            if non_rich_df.empty:
-                baseline_agg = pd.DataFrame(columns=["query", "baseline_ctr", "baseline_impressions"])
-            else:
-                baseline_agg = non_rich_df.groupby("query").agg(
-                    baseline_clicks=("clicks", "sum"),
-                    baseline_impressions=("impressions", "sum"),
-                    baseline_position=("position", "mean"),
-                ).reset_index()
-                baseline_agg["baseline_ctr"] = (
-                    baseline_agg["baseline_clicks"] / baseline_agg["baseline_impressions"]
-                ).fillna(0)
-        else:
-            baseline_agg = query_df.rename(columns={
-                "clicks": "baseline_clicks",
-                "impressions": "baseline_impressions",
-                "ctr": "baseline_ctr",
-                "position": "baseline_position",
-            })
-
-        # Merge rich result data with baseline
-        merged = rich_agg.merge(
-            baseline_agg[["query", "baseline_ctr", "baseline_impressions", "baseline_position"]],
-            on="query",
-            how="inner",
-        )
-
-        if merged.empty:
+        if rich_types.empty:
             return [self.create_finding(
                 task_id=31,
                 severity=Severity.INSIGHT,
-                summary="Could not match rich result queries to baseline data for CTR comparison.",
-                recommendations=["Ensure data is available for both search appearance and standard queries."],
+                summary="Only standard web appearances found — no rich result types detected.",
+                recommendations=[
+                    "Implement structured data to qualify for rich results.",
+                    "Focus on FAQ, HowTo, Review, and Product schema for eligible pages.",
+                ],
             )]
 
-        # Filter for meaningful volume
-        min_impressions = max(20, merged["rich_impressions"].quantile(0.2))
-        merged = merged[merged["rich_impressions"] >= min_impressions]
-        if merged.empty:
-            return []
+        # Calculate rich result CTR
+        rich_clicks = int(rich_types["clicks"].sum())
+        rich_impressions = int(rich_types["impressions"].sum())
+        rich_ctr = rich_clicks / max(rich_impressions, 1)
 
-        # Calculate CTR lift
-        merged["ctr_lift"] = merged["rich_ctr"] - merged["baseline_ctr"]
-        merged["ctr_lift_pct"] = (
-            (merged["ctr_lift"] / merged["baseline_ctr"]) * 100
-        ).fillna(0).replace([float("inf"), float("-inf")], 0)
+        # Calculate baseline CTR from query data
+        baseline_ctr = 0.0
+        if not query_df.empty:
+            total_clicks = query_df["clicks"].sum()
+            total_impressions = query_df["impressions"].sum()
+            baseline_ctr = total_clicks / max(total_impressions, 1)
 
-        # Aggregate by rich result type if possible
-        rich_type_agg = rich_df.groupby("searchAppearance").agg(
-            type_clicks=("clicks", "sum"),
-            type_impressions=("impressions", "sum"),
-            query_count=("query", "nunique"),
-        ).reset_index()
-        rich_type_agg["type_ctr"] = (
-            rich_type_agg["type_clicks"] / rich_type_agg["type_impressions"]
-        ).fillna(0)
+        # Build display table
+        display = rich_types.copy()
+        display["CTR %"] = (display["ctr"] * 100).round(2)
+        display["Avg Position"] = display["position"].round(1)
+        display = display[["searchAppearance", "clicks", "impressions", "CTR %", "Avg Position"]]
+        display.columns = ["Search Appearance", "Clicks", "Impressions", "CTR %", "Avg Position"]
+        display = display.sort_values("Impressions", ascending=False)
 
-        # Calculate overall metrics
-        overall_rich_ctr = (
-            merged["rich_clicks"].sum() / merged["rich_impressions"].sum()
-        ) if merged["rich_impressions"].sum() > 0 else 0
-
-        overall_baseline_ctr = (
-            merged["baseline_ctr"].mean()
-        )
-
-        avg_lift = overall_rich_ctr - overall_baseline_ctr
-        avg_lift_pct = (avg_lift / overall_baseline_ctr * 100) if overall_baseline_ctr > 0 else 0
-
-        # Build per-query display table
-        top_queries = merged.sort_values("rich_impressions", ascending=False).head(50)
-        display = pd.DataFrame({
-            "Query": top_queries["query"].values,
-            "Rich CTR %": (top_queries["rich_ctr"] * 100).round(2).values,
-            "Baseline CTR %": (top_queries["baseline_ctr"] * 100).round(2).values,
-            "CTR Lift %": (top_queries["ctr_lift"] * 100).round(2).values,
-            "Relative Lift %": top_queries["ctr_lift_pct"].round(1).values,
-            "Rich Impressions": top_queries["rich_impressions"].astype(int).values,
-            "Avg Position": top_queries["rich_position"].round(1).values,
-        })
-
-        # Build chart config by rich result type
         chart_config = {
             "type": "bar",
             "data": {
-                "x": rich_type_agg["searchAppearance"].tolist(),
-                "y_ctr": (rich_type_agg["type_ctr"] * 100).round(2).tolist(),
-                "y_queries": rich_type_agg["query_count"].tolist(),
+                "x": display["Search Appearance"].tolist(),
+                "y_ctr": display["CTR %"].tolist(),
             },
             "title": "CTR by Rich Result Type",
             "x_label": "Search Appearance Type",
             "y_label": "CTR %",
         }
 
-        if avg_lift > 0:
+        if baseline_ctr > 0:
+            lift_pct = ((rich_ctr - baseline_ctr) / baseline_ctr) * 100
+            if lift_pct > 0:
+                severity = Severity.INSIGHT
+                summary = (
+                    f"Rich results show {lift_pct:.1f}% higher CTR "
+                    f"({rich_ctr * 100:.2f}% vs {baseline_ctr * 100:.2f}% baseline) "
+                    f"with {rich_clicks:,} clicks across {len(rich_types)} appearance types."
+                )
+            else:
+                severity = Severity.MEDIUM
+                summary = (
+                    f"Rich results show {lift_pct:.1f}% lower CTR than baseline "
+                    f"({rich_ctr * 100:.2f}% vs {baseline_ctr * 100:.2f}%). "
+                    f"Some rich result types may be producing zero-click answers."
+                )
+        else:
             severity = Severity.INSIGHT
             summary = (
-                f"Rich results provide a {avg_lift_pct:.1f}% relative CTR lift "
-                f"({overall_rich_ctr * 100:.2f}% rich vs. {overall_baseline_ctr * 100:.2f}% baseline) "
-                f"across {len(merged)} queries. Expanding structured data coverage can increase overall CTR."
+                f"Rich results generate {rich_clicks:,} clicks across "
+                f"{len(rich_types)} appearance types at {rich_ctr * 100:.2f}% CTR."
             )
-        else:
-            severity = Severity.MEDIUM
-            summary = (
-                f"Rich results show a negative CTR impact ({avg_lift_pct:.1f}% relative change) "
-                f"across {len(merged)} queries. This may indicate that rich result features are "
-                f"consuming clicks (e.g., zero-click answers) rather than driving them."
-            )
-
-        extra_clicks = int(
-            (merged[merged["ctr_lift"] > 0]["rich_impressions"] * merged[merged["ctr_lift"] > 0]["ctr_lift"]).sum()
-        )
 
         return [self.create_finding(
             task_id=31,
             severity=severity,
             summary=summary,
-            affected_count=len(merged),
-            opportunity_value=f"~{extra_clicks:,} extra clicks from rich results" if extra_clicks > 0 else None,
+            affected_count=len(rich_types),
+            opportunity_value=f"{rich_clicks:,} clicks from rich results",
             data_table=display,
             recommendations=[
                 "Expand structured data to more pages to increase rich result eligibility.",
-                "Focus on rich result types with the highest CTR lift for your site.",
-                "Monitor for zero-click rich results (e.g., FAQ snippets) that may reduce clicks — consider adjusting markup strategy.",
-                "Use Google Search Console's Search Appearance report to track rich result growth.",
-                "Validate all structured data with Google's Rich Results Test before deploying.",
+                "Focus on rich result types with the highest CTR for your site.",
+                "Monitor for zero-click rich results that may reduce clicks.",
+                "Use Google Search Console's Search Appearance report to track growth.",
+                "Validate all structured data with Google's Rich Results Test.",
             ],
             chart_config=chart_config,
         )]
