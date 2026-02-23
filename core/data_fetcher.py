@@ -8,6 +8,7 @@ import logging
 import time
 from typing import Optional
 
+import pandas as pd
 import streamlit as st
 
 from core.data_store import DataStore
@@ -72,12 +73,22 @@ class DataFetcher:
             start_date, end_date = get_date_range(shape.days)
             logger.info(f"Fetching shape {shape_key}: {shape.description}")
 
-            df = self.client.query_search_analytics_all(
-                site_url=self.site_url,
-                start_date=start_date,
-                end_date=end_date,
-                dimensions=list(shape.dimensions),
-            )
+            try:
+                df = self.client.query_search_analytics_all(
+                    site_url=self.site_url,
+                    start_date=start_date,
+                    end_date=end_date,
+                    dimensions=list(shape.dimensions),
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to fetch shape {shape_key} "
+                    f"({shape.description}): {e}"
+                )
+                df = pd.DataFrame(
+                    columns=list(shape.dimensions)
+                    + ["clicks", "impressions", "ctr", "position"]
+                )
             self.store.set(shape.name, df)
             _progress(f"Fetched {shape.description} ({len(df):,} rows)")
 
