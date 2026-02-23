@@ -41,7 +41,6 @@ def get_authorization_url() -> str:
     flow = create_oauth_flow()
     auth_url, state = flow.authorization_url(
         access_type="offline",
-        include_granted_scopes="true",
         prompt="consent",
     )
     st.session_state["oauth_state"] = state
@@ -50,6 +49,8 @@ def get_authorization_url() -> str:
 
 def handle_oauth_callback(auth_code: str) -> Credentials:
     """Exchange the authorization code for credentials."""
+    import os
+    os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
     flow = create_oauth_flow()
     flow.fetch_token(code=auth_code)
     return flow.credentials
