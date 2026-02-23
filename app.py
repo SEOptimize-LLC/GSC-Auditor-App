@@ -46,18 +46,14 @@ def handle_oauth_redirect():
     if auth_code and not st.session_state.get("authenticated"):
         try:
             credentials = handle_oauth_callback(auth_code)
-            if credentials:
-                st.session_state["credentials"] = credentials
-                st.session_state["gsc_client"] = GSCClient(credentials)
-                st.session_state["authenticated"] = True
-                st.session_state["properties"] = st.session_state[
-                    "gsc_client"
-                ].list_properties()
-                st.query_params.clear()
-                st.rerun()
-            else:
-                st.query_params.clear()
-                st.error("Authentication failed. Please try signing in again.")
+            st.session_state["credentials"] = credentials
+            st.session_state["gsc_client"] = GSCClient(credentials)
+            st.session_state["authenticated"] = True
+            st.session_state["properties"] = st.session_state[
+                "gsc_client"
+            ].list_properties()
+            st.query_params.clear()
+            st.rerun()
         except Exception as e:
             st.query_params.clear()
             st.error(f"Authentication failed: {e}")
