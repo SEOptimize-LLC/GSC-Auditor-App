@@ -167,7 +167,7 @@ def render_sidebar():
 
 
 def run_audit(config: dict):
-    """Execute the full audit pipeline."""
+    """Execute the full audit pipeline with visible progress tracking."""
     st.session_state["audit_running"] = True
     store = DataStore()
     st.session_state["data_store"] = store
@@ -183,11 +183,14 @@ def run_audit(config: dict):
         tasks_executed=task_ids,
     )
 
-    progress_bar = st.progress(0, text="Starting audit...")
+    # Progress container at the top of the page
+    st.header("Running Audit...")
+    progress_bar = st.progress(0, text="Initializing...")
     status_text = st.empty()
+    phase_detail = st.empty()
 
     # --- Phase 1: Data Fetching (0-40%) ---
-    status_text.text("📡 Fetching GSC data...")
+    status_text.markdown("**Phase 1/4** — Fetching GSC data...")
     fetcher = DataFetcher(
         client=st.session_state["gsc_client"],
         store=store,
@@ -196,42 +199,59 @@ def run_audit(config: dict):
 
     def fetch_progress(current, total, message):
         pct = int((current / max(total, 1)) * 40)
-        progress_bar.progress(pct, text=f"Fetching: {message}")
+        progress_bar.progress(pct, text=f"📡 Fetching data ({current}/{total})")
+        phase_detail.caption(message)
 
     fetcher.fetch_for_tasks(task_ids, progress_callback=fetch_progress)
 
     # --- Phase 2: Audit Execution (40-80%) ---
-    status_text.text("🔎 Running audit tasks...")
+    status_text.markdown("**Phase 2/4** — Running audit tasks...")
     from auditors import get_auditors_for_tasks
 
     auditors = get_auditors_for_tasks(task_ids, store, brand_name)
     total_auditors = len(auditors)
 
     for i, (auditor, auditor_task_ids) in enumerate(auditors):
+        group_name = auditor.__class__.__name__.replace("Auditor", "")
+        phase_detail.caption(f"Analyzing: {group_name}...")
         findings = auditor.run_tasks(auditor_task_ids)
         result.add_findings(findings)
         pct = 40 + int(((i + 1) / max(total_auditors, 1)) * 40)
-        progress_bar.progress(pct, text=f"Completed: {auditor.__class__.__name__}")
+        progress_bar.progress(
+            pct,
+            text=f"🔎 Audit tasks ({i + 1}/{total_auditors})",
+        )
 
     # --- Phase 3: AI Analysis (80-95%) ---
     if config["ai_enabled"]:
-        status_text.text("🧠 Running AI analysis...")
+        status_text.markdown("**Phase 3/4** — Running AI analysis...")
+        phase_detail.caption("Generating group-level narratives...")
         try:
             from ai.analysis_engine import AnalysisEngine
 
             engine = AnalysisEngine()
-            engine.analyze_result(result, progress_callback=lambda p, msg: (
-                progress_bar.progress(80 + int(p * 15), text=f"AI: {msg}")
-            ))
+
+            def ai_progress(p, msg):
+                progress_bar.progress(
+                    80 + int(p * 15),
+                    text=f"🧠 AI analysis",
+                )
+                phase_detail.caption(msg)
+
+            engine.analyze_result(result, progress_callback=ai_progress)
         except Exception as e:
             st.warning(f"AI analysis skipped: {e}")
-    progress_bar.progress(95, text="Generating reports...")
+    else:
+        status_text.markdown("**Phase 3/4** — AI analysis (skipped)")
 
     # --- Phase 4: Report Generation (95-100%) ---
-    status_text.text("📄 Generating reports...")
+    progress_bar.progress(95, text="📄 Generating reports...")
+    status_text.markdown("**Phase 4/4** — Generating reports...")
+    phase_detail.caption("Building markdown and HTML reports...")
     st.session_state["audit_result"] = result
-    progress_bar.progress(100, text="Audit complete!")
-    status_text.text("✅ Audit complete!")
+    progress_bar.progress(100, text="✅ Audit complete!")
+    status_text.markdown("**Audit complete!** Check the Results, AI Insights, and Export tabs.")
+    phase_detail.empty()
     st.session_state["audit_running"] = False
 
 
@@ -434,9 +454,8 @@ def main():
         elif not sidebar_config.get("selected_tasks"):
             st.error("Please select at least one audit task.")
         else:
-            with tab_results:
-                run_audit(sidebar_config)
-                st.rerun()
+            run_audit(sidebar_config)
+            st.rerun()
 
 
 if __name__ == "__main__":
