@@ -1,7 +1,6 @@
 """Google Search Console API client with OAuth 2.0 authentication."""
 
 import logging
-from datetime import date, timedelta
 from typing import Any, Optional
 
 import pandas as pd
@@ -49,11 +48,18 @@ def get_authorization_url() -> str:
     return auth_url
 
 
-def handle_oauth_callback(auth_code: str) -> Credentials:
-    """Exchange the authorization code for credentials."""
-    flow = create_oauth_flow()
-    flow.fetch_token(code=auth_code)
-    return flow.credentials
+def handle_oauth_callback(auth_code: str) -> Credentials | None:
+    """Exchange the authorization code for credentials.
+
+    Returns None if the token exchange fails.
+    """
+    try:
+        flow = create_oauth_flow()
+        flow.fetch_token(code=auth_code)
+        return flow.credentials
+    except Exception as e:
+        logger.warning(f"OAuth token exchange failed: {e}")
+        return None
 
 
 class GSCClient:

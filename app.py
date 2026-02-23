@@ -40,6 +40,29 @@ def init_session_state():
             st.session_state[key] = val
 
 
+def handle_oauth_redirect():
+    """Check URL query params for OAuth callback code and exchange it for credentials."""
+    auth_code = st.query_params.get("code")
+    if auth_code and not st.session_state.get("authenticated"):
+        try:
+            credentials = handle_oauth_callback(auth_code)
+            if credentials:
+                st.session_state["credentials"] = credentials
+                st.session_state["gsc_client"] = GSCClient(credentials)
+                st.session_state["authenticated"] = True
+                st.session_state["properties"] = st.session_state[
+                    "gsc_client"
+                ].list_properties()
+                st.query_params.clear()
+                st.rerun()
+            else:
+                st.query_params.clear()
+                st.error("Authentication failed. Please try signing in again.")
+        except Exception as e:
+            st.query_params.clear()
+            st.error(f"Authentication failed: {e}")
+
+
 def render_sidebar():
     """Render the sidebar with auth, property selection, and audit controls."""
     st.sidebar.title("🔍 GSC Audit Agent")
@@ -50,25 +73,10 @@ def render_sidebar():
         st.sidebar.subheader("1. Connect to Google")
         auth_url = get_authorization_url()
         st.sidebar.link_button("🔗 Sign in with Google", auth_url)
-        st.sidebar.caption("Grant read-only access to your Search Console data.")
-
-        auth_code = st.sidebar.text_input(
-            "Paste authorization code:",
-            type="password",
-            help="After signing in, copy the authorization code and paste it here.",
+        st.sidebar.caption(
+            "Grant read-only access to your Search Console data. "
+            "You'll be redirected back here automatically."
         )
-        if auth_code:
-            try:
-                credentials = handle_oauth_callback(auth_code)
-                st.session_state["credentials"] = credentials
-                st.session_state["gsc_client"] = GSCClient(credentials)
-                st.session_state["authenticated"] = True
-                st.session_state["properties"] = st.session_state[
-                    "gsc_client"
-                ].list_properties()
-                st.rerun()
-            except Exception as e:
-                st.sidebar.error(f"Authentication failed: {e}")
         return None
 
     st.sidebar.success("✅ Connected to Google")
@@ -403,6 +411,7 @@ def render_export_tab():
 def main():
     """Main application entry point."""
     init_session_state()
+    handle_oauth_redirect()
 
     sidebar_config = render_sidebar()
 
